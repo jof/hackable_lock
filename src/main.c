@@ -19,7 +19,7 @@ static const char *TAG = "main";
 #define scan_rsp_config_flag (1 << 1)
 #define PROFILE_COUNT 1
 #define LOCK_PROFILE_APP_ID 0
-#define LOCK_PROFILE_HANDLE_COUNT 1
+#define LOCK_PROFILE_HANDLE_COUNT 4
 #define DEVICE_NAME "Hackable Lock"
 
 // 31337000-feed-face-100c-deadcafefeed
@@ -187,8 +187,18 @@ static void gatts_lock_profile_event_handler(esp_gatts_cb_event_t event, esp_gat
         esp_ble_gatts_create_service(gatts_if, &gatts_profile_table[LOCK_PROFILE_APP_ID].service_id, LOCK_PROFILE_HANDLE_COUNT);
         break;
     case ESP_GATTS_READ_EVT:
-        ESP_LOGI(TAG, "GATTS: Client requested a read");
-        // TODO
+        ESP_LOGI(TAG, "GATTS: Client requested a read. conn_id %d, trans_id %d, handle %d",
+            param->read.conn_id,
+            param->read.trans_id,
+            param->read.handle);
+        esp_gatt_rsp_t rsp;
+        memset(&rsp, 0, sizeof(esp_gatt_rsp_t));
+        rsp.attr_value.handle = param->read.handle;
+        rsp.attr_value.len = 500;
+        for (int i = 0; i < rsp.attr_value.len; i++) {
+            rsp.attr_value.value[i] = 0x11;
+        }
+        esp_ble_gatts_send_response(gatts_if, param->read.conn_id, param->read.trans_id, ESP_GATT_OK, &rsp);
         break;
     case ESP_GATTS_WRITE_EVT:
         ESP_LOGI(TAG, "GATTS: Client requested an write");
@@ -196,19 +206,44 @@ static void gatts_lock_profile_event_handler(esp_gatts_cb_event_t event, esp_gat
         break;
     case ESP_GATTS_EXEC_WRITE_EVT:
         ESP_LOGI(TAG, "GATTS: Client requested an execute write");
-        // TODO
+        esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, NULL);
+        // call a write handler
+        if (param->exec_write.exec_write_flag == ESP_GATT_PREP_WRITE_EXEC){
+            // esp_log_buffer_hex(TAG, prepare_write_env->prepare_buf, prepare_write_env->prepare_len);
+            ESP_LOGI(TAG, "   would log prepare_write_env");
+        } else {
+            ESP_LOGI(TAG,"   ESP_GATT_PREP_WRITE_CANCEL");
+        }
+        ESP_LOGI(TAG, "   would empty prepare_write_env buf");
+        //
         break;
     case ESP_GATTS_MTU_EVT:
-        ESP_LOGI(TAG, "GATTS: Set mtu complete");
-        // TODO
+        ESP_LOGI(TAG, "GATTS: Set mtu complete. MTU = %d", param->mtu.mtu);
         break;
     case ESP_GATTS_UNREG_EVT:
         ESP_LOGI(TAG, "GATTS: Application ID unregistered");
         // TODO
         break;
     case ESP_GATTS_CREATE_EVT:
-        ESP_LOGI(TAG, "GATTS: Create service complete");
-        // TODO
+        ESP_LOGI(TAG, "GATTS: Create service complete. status = %d, service_handle = %d",
+            param->create.status, param->create.service_handle);
+            gatts_profile_table[LOCK_PROFILE_APP_ID].service_handle = param->create.service_handle;
+            // gatts_profile_table[LOCK_PROFILE_APP_ID].char_uuid.len = ESP_UUID_LEN_128;
+            // memcpy(gatts_profile_table[LOCK_PROFILE_APP_ID].char_uuid.uuid.uuid128, lock_service_uuid128, ESP_UUID_LEN_128);
+            gatts_profile_table[LOCK_PROFILE_APP_ID].char_uuid.len = ESP_UUID_LEN_16;
+            gatts_profile_table[LOCK_PROFILE_APP_ID].char_uuid.uuid.uuid16 = 0x1212;
+
+            esp_ble_gatts_start_service(gatts_profile_table[LOCK_PROFILE_APP_ID].service_handle);
+            esp_gatt_char_prop_t property = ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_WRITE | ESP_GATT_CHAR_PROP_BIT_NOTIFY;
+            esp_err_t add_char_ret = esp_ble_gatts_add_char(gatts_profile_table[LOCK_PROFILE_APP_ID].service_handle,
+                &gatts_profile_table[LOCK_PROFILE_APP_ID].char_uuid,
+                ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+                property,
+                NULL,
+                NULL);
+            if (add_char_ret) {
+                ESP_LOGE(TAG, "esp_ble_gatts_add_char() failed, error code = %x", add_char_ret);
+            }
         break;
     case ESP_GATTS_ADD_INCL_SRVC_EVT:
         ESP_LOGI(TAG, "GATTS: Add included service");
@@ -220,61 +255,30 @@ static void gatts_lock_profile_event_handler(esp_gatts_cb_event_t event, esp_gat
             param->add_char.attr_handle,
             param->add_char.service_handle);
         gatts_profile_table[LOCK_PROFILE_APP_ID].char_handle = param->add_char.attr_handle;
-        //
-        // gatts_profile_table[LOCK_PROFILE_APP_ID].descr_uuid.len = ESP_UUID_LEN_16;
-        // gatts_profile_table[LOCK_PROFILE_APP_ID].descr_uuid.uuid.uuid16 = ESP_GATT_UUID_CHAR_CLIENT_CONFIG;
-        //
-        gatts_profile_table[LOCK_PROFILE_APP_ID].descr_uuid.len = ESP_UUID_LEN_128;
-        memcpy(gatts_profile_table[LOCK_PROFILE_APP_ID].descr_uuid.uuid.uuid128, lock_characteristic_uuid128, ESP_UUID_LEN_128);
-
-        const uint8_t *prf_char;
-        uint16_t length = 0;
-        esp_err_t get_attr_ret = esp_ble_gatts_get_attr_value(param->add_char.attr_handle, &length, &prf_char);
-        if (get_attr_ret == ESP_FAIL) {
-            ESP_LOGE(TAG, "Illegal handle");
-        }
-        ESP_LOGI(TAG, "The gatts demo char length = %x", length);
-        for (int i = 0; i < length; i++) {
-            ESP_LOGI(TAG, "prf_char[%x] = %x", i, prf_char[i]);
-        }
+        // Add a description descriptor
+        gatts_profile_table[LOCK_PROFILE_APP_ID].descr_uuid.len = ESP_UUID_LEN_16;
+        gatts_profile_table[LOCK_PROFILE_APP_ID].descr_uuid.uuid.uuid16 = ESP_GATT_UUID_CHAR_DESCRIPTION;
+        static const char characteristic_description[] = "Input characteristic";
+        esp_attr_value_t description_descriptor_value = {
+            .attr_len = sizeof(characteristic_description),
+            .attr_value = &characteristic_description,
+        };
         esp_err_t add_descr_ret = esp_ble_gatts_add_char_descr(
             gatts_profile_table[LOCK_PROFILE_APP_ID].service_handle,
             &gatts_profile_table[LOCK_PROFILE_APP_ID].descr_uuid,
-            ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
-            NULL,
+            ESP_GATT_PERM_READ,
+            &description_descriptor_value ,
             NULL);
         if (add_descr_ret) {
             ESP_LOGE(TAG, "add char descr failed, error code = %x", add_descr_ret);
         }
-        //
-        //
-        // uint16_t length = 0;
-        // const uint8_t *prf_char;
-        // ESP_LOGI(GATTS_TAG, "ADD_CHAR_EVT, status %d,  attr_handle %d, service_handle %d\n",
-        //         param->add_char.status, param->add_char.attr_handle, param->add_char.service_handle);
-        // gl_profile_tab[PROFILE_A_APP_ID].char_handle = param->add_char.attr_handle;
-        // gl_profile_tab[PROFILE_A_APP_ID].descr_uuid.len = ESP_UUID_LEN_16;
-        // gl_profile_tab[PROFILE_A_APP_ID].descr_uuid.uuid.uuid16 = ESP_GATT_UUID_CHAR_CLIENT_CONFIG;
-
-        // esp_err_t get_attr_ret = esp_ble_gatts_get_attr_value(param->add_char.attr_handle,  &length, &prf_char);
-        // if (get_attr_ret == ESP_FAIL){
-        //     ESP_LOGE(GATTS_TAG, "ILLEGAL HANDLE");
-        // }
-
-        // ESP_LOGI(GATTS_TAG, "the gatts demo char length = %x\n", length);
-        // for(int i = 0; i < length; i++){
-        //     ESP_LOGI(GATTS_TAG, "prf_char[%x] =%x\n",i,prf_char[i]);
-        // }
-        // esp_err_t add_descr_ret = esp_ble_gatts_add_char_descr(gl_profile_tab[PROFILE_A_APP_ID].service_handle, &gl_profile_tab[PROFILE_A_APP_ID].descr_uuid,
-        //                                                         ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE, NULL, NULL);
-        // if (add_descr_ret){
-        //     ESP_LOGE(GATTS_TAG, "add char descr failed, error code =%x", add_descr_ret);
-        // }
-
         break;
     case ESP_GATTS_ADD_CHAR_DESCR_EVT:
-        ESP_LOGI(TAG, "GATTS: Add Characteristic Descriptor complete");
-        // TODO
+        gatts_profile_table[LOCK_PROFILE_APP_ID].descr_handle = param->add_char_descr.attr_handle;
+        ESP_LOGI(TAG, "GATTS: Add Characteristic Descriptor complete, status %d, attr_handle %d, service_handle %d",
+            param->add_char_descr.status,
+            param->add_char_descr.attr_handle,
+            param->add_char_descr.service_handle);
         break;
     case ESP_GATTS_DELETE_EVT:
         ESP_LOGI(TAG, "GATTS: Delete");
@@ -320,12 +324,19 @@ static void gatts_lock_profile_event_handler(esp_gatts_cb_event_t event, esp_gat
         // TODO
         break;
     case ESP_GATTS_OPEN_EVT:
+        break;
     case ESP_GATTS_CANCEL_OPEN_EVT:
+        break;
     case ESP_GATTS_CLOSE_EVT:
+        break;
     case ESP_GATTS_LISTEN_EVT:
+        break;
     case ESP_GATTS_CONGEST_EVT:
+        break;
+    case ESP_GATTS_RESPONSE_EVT:
+        break;
     default:
-        ESP_LOGE(TAG, "Unhandled GATTS Event. Event code = %x", event);
+        ESP_LOGE(TAG, "Unhandled GATTS Event. Event code = %d", event);
     }
 }
 
