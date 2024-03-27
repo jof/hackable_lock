@@ -26,6 +26,8 @@ static const char *TAG = "main";
 static uint8_t lock_service_uuid128[16] = {0xED, 0xFE, 0xFE, 0xCA, 0xAD, 0xDE, 0x0C, 0x10, 0xCE, 0xFA, 0xED, 0xFE, 0x00, 0x70, 0x33, 0x31};
 // 31337000-100c-100c-100c-0123456789ab
 static uint8_t lock_characteristic_version_uuid128[16] = {0xAB, 0x89, 0x67, 0x45, 0x23, 0x01, 0x0C, 0x10, 0x0C, 0x10, 0x0C, 0x10, 0x00, 0x70, 0x33, 0x31};
+// 31337000-100c-100c-100c-112233445566
+static uint8_t lock_characteristic_system_id_uuid128[16] = {0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x0C, 0x10, 0x0C, 0x10, 0x0C, 0x10, 0x00, 0x70, 0x33, 0x31};
 // 31337000-feed-face-100c-00c0ffeeface
 static uint8_t lock_characteristic_read_uuid128[16] = {0xCE, 0xFA, 0xEE, 0xFF, 0xC0, 0x00, 0x0C, 0x10, 0xCE, 0xFA, 0xED, 0xFE, 0x00, 0x70, 0x33, 0x31};
 // 31337000-feed-face-100c-a0000badf00d
@@ -86,6 +88,8 @@ struct gatts_profile
     esp_bt_uuid_t read_characteristic_uuid;
     uint16_t write_characteristic_handle;
     esp_bt_uuid_t write_characteristic_uuid;
+    uint16_t system_id_characteristic_handle;
+    esp_bt_uuid_t system_id_characteristic_uuid;
     // esp_gatt_perm_t perm;
     // esp_gatt_char_prop_t property;
     // uint16_t descr_handle;
@@ -204,6 +208,9 @@ static void gatts_lock_profile_event_handler(esp_gatts_cb_event_t event, esp_gat
         // Version
         gatts_profile_table[LOCK_PROFILE_APP_ID].version_characteristic_uuid.len = ESP_UUID_LEN_128;
         memcpy(gatts_profile_table[LOCK_PROFILE_APP_ID].version_characteristic_uuid.uuid.uuid128, lock_characteristic_version_uuid128, ESP_UUID_LEN_128);
+        // System ID
+        gatts_profile_table[LOCK_PROFILE_APP_ID].system_id_characteristic_uuid.len = ESP_UUID_LEN_128;
+        memcpy(gatts_profile_table[LOCK_PROFILE_APP_ID].system_id_characteristic_uuid.uuid.uuid128, lock_characteristic_system_id_uuid128, ESP_UUID_LEN_128);
         // Read
         gatts_profile_table[LOCK_PROFILE_APP_ID].read_characteristic_uuid.len = ESP_UUID_LEN_128;
         memcpy(gatts_profile_table[LOCK_PROFILE_APP_ID].read_characteristic_uuid.uuid.uuid128, lock_characteristic_read_uuid128, ESP_UUID_LEN_128);
@@ -223,6 +230,19 @@ static void gatts_lock_profile_event_handler(esp_gatts_cb_event_t event, esp_gat
         if (add_char_version_ret)
         {
             ESP_LOGE(TAG, "esp_ble_gatts_add_char() for Read characteristic failed, error code = %x", add_char_version_ret);
+        }
+
+        // System ID
+        property = ESP_GATT_CHAR_PROP_BIT_READ;
+        esp_err_t add_char_system_id_ret = esp_ble_gatts_add_char(gatts_profile_table[LOCK_PROFILE_APP_ID].service_handle,
+                                                                  &gatts_profile_table[LOCK_PROFILE_APP_ID].system_id_characteristic_uuid,
+                                                                  ESP_GATT_PERM_READ,
+                                                                  property,
+                                                                  NULL,
+                                                                  NULL);
+        if (add_char_system_id_ret)
+        {
+            ESP_LOGE(TAG, "esp_ble_gatts_add_char() for System ID characteristic failed, error code = %x", add_char_system_id_ret);
         }
 
         // Read
@@ -263,6 +283,13 @@ static void gatts_lock_profile_event_handler(esp_gatts_cb_event_t event, esp_gat
             memcmp(&param->add_char.char_uuid.uuid.uuid128, lock_characteristic_version_uuid128, ESP_UUID_LEN_128) == 0)
         {
             gatts_profile_table[LOCK_PROFILE_APP_ID].version_characteristic_handle = param->add_char.attr_handle;
+        }
+        // System ID
+        if (
+            param->add_char.char_uuid.len == ESP_UUID_LEN_128 &&
+            memcmp(&param->add_char.char_uuid.uuid.uuid128, lock_characteristic_system_id_uuid128, ESP_UUID_LEN_128) == 0)
+        {
+            gatts_profile_table[LOCK_PROFILE_APP_ID].system_id_characteristic_handle = param->add_char.attr_handle;
         }
         // Read
         if (
@@ -320,6 +347,23 @@ static void gatts_lock_profile_event_handler(esp_gatts_cb_event_t event, esp_gat
             read_response.attr_value.len = 1;
             read_response.attr_value.value[0] = 0x00;
             esp_ble_gatts_send_response(gatts_if, param->read.conn_id, param->read.trans_id, ESP_GATT_OK, &read_response);
+        }
+        else if (param->read.handle == gatts_profile_table[LOCK_PROFILE_APP_ID].system_id_characteristic_handle)
+        {
+            // System ID
+            ESP_LOGD(TAG, "GATTS: System ID is being read");
+            // TODO
+            read_response.attr_value.len = 10;
+            read_response.attr_value.value[0] = 0x00;
+            read_response.attr_value.value[1] = 0x11;
+            read_response.attr_value.value[2] = 0x22;
+            read_response.attr_value.value[3] = 0x33;
+            read_response.attr_value.value[4] = 0x44;
+            read_response.attr_value.value[5] = 0x55;
+            read_response.attr_value.value[6] = 0x66;
+            read_response.attr_value.value[7] = 0x77;
+            read_response.attr_value.value[8] = 0x88;
+            read_response.attr_value.value[9] = 0x99;
         }
         else if (param->read.handle == gatts_profile_table[LOCK_PROFILE_APP_ID].read_characteristic_handle)
         {
