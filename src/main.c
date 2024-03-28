@@ -14,13 +14,27 @@ static const char *TAG = "main";
 // #define GATTS_CHAR_UUID 0xFF01
 // #define GATTS_NUM_HANDLE 4
 // #define MAX_BLE_PACKET_SIZE 20 // Adjust based on your BLE stack's capabilities
-#define MAX_MESSAGE_SIZE 1024
+#define MAX_L2_MESSAGE_SIZE 1024
 #define adv_config_flag (1 << 0)
 #define scan_rsp_config_flag (1 << 1)
 #define PROFILE_COUNT 1
 #define LOCK_PROFILE_APP_ID 0
 #define LOCK_PROFILE_HANDLE_COUNT 10
 #define DEVICE_NAME "Hackable Lock"
+
+// We don't have a Company Identifier from the Bluetooth SIG, but they appear to
+// assign incrementally starting from 0x0000, so just choosing 0xFFFF as an
+// undefined value unlikely to conflict with anybody else for a long time.
+// https://bitbucket.org/bluetooth-SIG/public/src/main/assigned_numbers/company_identifiers/company_identifiers.yaml
+#define VENDOR_ID 0xFFFF
+
+uint8_t l2_rx_message_buffer[MAX_L2_MESSAGE_SIZE];
+uint8_t l2_tx_message_buffer[MAX_L2_MESSAGE_SIZE];
+uint16_t l2_tx_message_buffer_idx;
+
+// System ID
+// TODO -- This should come from something more easily configured. Maybe NVS?
+static uint8_t system_id[10] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99};
 
 // 31337000-feed-face-100c-deadcafefeed
 static uint8_t lock_service_uuid128[16] = {0xED, 0xFE, 0xFE, 0xCA, 0xAD, 0xDE, 0x0C, 0x10, 0xCE, 0xFA, 0xED, 0xFE, 0x00, 0x70, 0x33, 0x31};
@@ -33,38 +47,44 @@ static uint8_t lock_characteristic_read_uuid128[16] = {0xCE, 0xFA, 0xEE, 0xFF, 0
 // 31337000-feed-face-100c-a0000badf00d
 static uint8_t lock_characteristic_write_uuid128[16] = {0x0D, 0xF0, 0xAD, 0x0B, 0x00, 0xA0, 0x0C, 0x10, 0xCE, 0xFA, 0xED, 0xFE, 0x00, 0x70, 0x33, 0x31};
 
-esp_ble_adv_data_t adv_data = {
-    .set_scan_rsp = false,
-    .include_name = false,
-    .include_txpower = false,
-    .min_interval = 0x20,
-    .max_interval = 0x40,
+// Construct BLE Advertising data, pulling in manufacturer data with a System ID from `system_id`
+void get_ble_adv_data(uint8_t manufacturer_data[], uint16_t *manufacturer_data_len, esp_ble_adv_data_t *adv_data) {
+    adv_data->set_scan_rsp = false;
+    adv_data->include_name = false;
+    adv_data->include_txpower = false;
+    adv_data->min_interval = 0x20;
+    adv_data->max_interval = 0x40;
+    adv_data->service_data_len = 0;
+    adv_data->service_uuid_len = ESP_UUID_LEN_128;
+    adv_data->p_service_uuid = lock_service_uuid128;
+    adv_data->flag = (ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT);
+
+    *manufacturer_data_len = 0;
+    manufacturer_data[0] = (uint8_t)(VENDOR_ID >> 8);
+    manufacturer_data[1] = (uint8_t)(VENDOR_ID & 0xFF);
+    *manufacturer_data_len += 2;
+    memcpy(&manufacturer_data[2], system_id, sizeof(system_id));
+    // bcopy(system_id, &manufacturer_data[2], sizeof(system_id));
+    *manufacturer_data_len += sizeof(system_id);
+    adv_data->manufacturer_len = *manufacturer_data_len;
+    adv_data->p_manufacturer_data = manufacturer_data;
+}
+
+void get_ble_scan_rsp_data(esp_ble_adv_data_t *adv_data) {
+    adv_data->set_scan_rsp = true;
+    adv_data->include_name = true;
+    adv_data->include_txpower = false;
     // Reference: https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Assigned_Numbers/out/en/Assigned_Numbers.pdf?v=1710832648803
-    // .appearance = 0x0708, // Access Control - Door Lock
-    .manufacturer_len = 0,
-    .p_manufacturer_data = NULL,
-    .service_data_len = 0,
-    .p_service_data = NULL,
-    .service_uuid_len = sizeof(lock_service_uuid128),
-    .p_service_uuid = lock_service_uuid128,
-    .flag = (ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT),
-};
-esp_ble_adv_data_t scan_rsp_data = {
-    .set_scan_rsp = true,
-    .include_name = true,
-    .include_txpower = true,
-    // .min_interval = 0x20,
-    // .max_interval = 0x40,
-    // Reference: https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Assigned_Numbers/out/en/Assigned_Numbers.pdf?v=1710832648803
-    .appearance = 0x0708, // Access Control - Door Lock
-    .manufacturer_len = 0,
-    .p_manufacturer_data = NULL,
-    .service_data_len = 0,
-    .p_service_data = NULL,
-    .service_uuid_len = 0,
-    .p_service_uuid = NULL,
-    .flag = (ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT),
-};
+    adv_data->appearance = 0x0708; // Access Control - Door Lock
+    adv_data->manufacturer_len = 0;
+    adv_data->p_manufacturer_data = NULL;
+    adv_data->service_data_len = 0;
+    adv_data->p_service_data = NULL;
+    adv_data->service_uuid_len = 0;
+    adv_data->p_service_uuid = NULL;
+    adv_data->flag = (ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT);
+}
+
 esp_ble_adv_params_t adv_params = {
     .adv_int_min = 0x20,
     .adv_int_max = 0x40,
@@ -104,65 +124,8 @@ static struct gatts_profile gatts_profile_table[PROFILE_COUNT] = {
     },
 };
 
-// static uint16_t characteristic_handle;
-// static uint8_t service_uuid[16] = {
-//     /* UUID for the service */
-// };
-
-// static uint8_t raw_data[MAX_MESSAGE_SIZE];
-// static int raw_data_index = 0;
 static uint8_t adv_config_done = 0;
 
-// static esp_gatt_char_prop_t a_property = 0;
-
-// static esp_attr_value_t gatts_demo_char1_val = {
-//     .attr_max_len = MAX_MESSAGE_SIZE,
-//     .attr_len     = sizeof(raw_data),
-//     .attr_value   = raw_data,
-// };
-
-// static void example_write_event_env(esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param)
-// {
-//     esp_gatt_status_t status = ESP_GATT_WRITE_NOT_PERMIT;
-
-//     if (param->write.handle == characteristic_handle)
-//     {
-//         if (param->write.is_prep)
-//         {
-//             // Handle prepare write if you need long writes
-//         }
-//         else
-//         {
-//             size_t len = param->write.len;
-//             uint8_t *value = param->write.value;
-
-//             // Example of handling data in chunks, simple protocol assumed
-//             if (len > 0)
-//             {
-//                 if (value[0] == 0x01)
-//                 { // Assuming 0x01 indicates start of new message
-//                     raw_data_index = 0;
-//                 }
-
-//                 if (raw_data_index + len - 1 < MAX_MESSAGE_SIZE)
-//                 {
-//                     memcpy(&raw_data[raw_data_index], &value[1], len - 1); // Skip the first byte (protocol byte)
-//                     raw_data_index += (len - 1);
-
-//                     if (value[0] == 0x03)
-//                     { // Assuming 0x03 indicates end of message
-//                         // Here, you have a full message in raw_data
-//                         // Process the message as needed
-//                         status = ESP_GATT_OK;
-//                     }
-//                 }
-//             }
-//         }
-//     }
-
-//     // Send a response to the write request
-//     esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, status, NULL);
-// }
 
 static void gatts_lock_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param)
 {
@@ -178,21 +141,28 @@ static void gatts_lock_profile_event_handler(esp_gatts_cb_event_t event, esp_gat
         esp_err_t set_device_name_ret = esp_ble_gap_set_device_name(DEVICE_NAME);
         if (set_device_name_ret)
         {
-            ESP_LOGE(TAG, "esp_ble_gap_set_device_name() failed, error code = %x", set_device_name_ret);
+            ESP_LOGE(TAG, "esp_ble_gap_set_device_name() failed, error code = %s", esp_err_to_name(set_device_name_ret));
         }
         // Configure advertisements
         esp_err_t config_adv_data_ret;
+        uint16_t manufacturer_data_len;
+        uint8_t manufacturer_data[30];
+        memset(manufacturer_data, 0, 30);
+        esp_ble_adv_data_t adv_data;
+        get_ble_adv_data(manufacturer_data, &manufacturer_data_len, &adv_data);
         config_adv_data_ret = esp_ble_gap_config_adv_data(&adv_data);
         if (config_adv_data_ret)
         {
-            ESP_LOGE(TAG, "esp_ble_gap_config_adv_data() with advertising data failed, error code = %x", config_adv_data_ret);
+            ESP_LOGE(TAG, "esp_ble_gap_config_adv_data() with advertising data failed, error code = %s", esp_err_to_name(config_adv_data_ret));
         }
         adv_config_done |= adv_config_flag;
         // Configure Scan Response data
+        esp_ble_adv_data_t scan_rsp_data;
+        get_ble_scan_rsp_data(&scan_rsp_data);
         config_adv_data_ret = esp_ble_gap_config_adv_data(&scan_rsp_data);
         if (config_adv_data_ret)
         {
-            ESP_LOGE(TAG, "esp_ble_gap_config_adv_data() with scan response data failed, error code = %x", config_adv_data_ret);
+            ESP_LOGE(TAG, "esp_ble_gap_config_adv_data() with scan response data failed, error code = %s", esp_err_to_name(config_adv_data_ret));
         }
         adv_config_done |= scan_rsp_config_flag;
 
@@ -229,7 +199,7 @@ static void gatts_lock_profile_event_handler(esp_gatts_cb_event_t event, esp_gat
                                                                 NULL);
         if (add_char_version_ret)
         {
-            ESP_LOGE(TAG, "esp_ble_gatts_add_char() for Read characteristic failed, error code = %x", add_char_version_ret);
+            ESP_LOGE(TAG, "esp_ble_gatts_add_char() for Read characteristic failed, error code = %s", esp_err_to_name(add_char_version_ret));
         }
 
         // System ID
@@ -242,7 +212,7 @@ static void gatts_lock_profile_event_handler(esp_gatts_cb_event_t event, esp_gat
                                                                   NULL);
         if (add_char_system_id_ret)
         {
-            ESP_LOGE(TAG, "esp_ble_gatts_add_char() for System ID characteristic failed, error code = %x", add_char_system_id_ret);
+            ESP_LOGE(TAG, "esp_ble_gatts_add_char() for System ID characteristic failed, error code = %s", esp_err_to_name(add_char_system_id_ret));
         }
 
         // Read
@@ -255,7 +225,7 @@ static void gatts_lock_profile_event_handler(esp_gatts_cb_event_t event, esp_gat
                                                              NULL);
         if (add_char_read_ret)
         {
-            ESP_LOGE(TAG, "esp_ble_gatts_add_char() for Read characteristic failed, error code = %x", add_char_read_ret);
+            ESP_LOGE(TAG, "esp_ble_gatts_add_char() for Read characteristic failed, error code = %s", esp_err_to_name(add_char_read_ret));
         }
 
         // Write
@@ -268,7 +238,7 @@ static void gatts_lock_profile_event_handler(esp_gatts_cb_event_t event, esp_gat
                                                               NULL);
         if (add_char_write_ret)
         {
-            ESP_LOGE(TAG, "esp_ble_gatts_add_char() for Write characteristic failed, error code = %x", add_char_write_ret);
+            ESP_LOGE(TAG, "esp_ble_gatts_add_char() for Write characteristic failed, error code = %s", esp_err_to_name(add_char_write_ret));
         }
         break;
     case ESP_GATTS_ADD_CHAR_EVT:
@@ -306,24 +276,6 @@ static void gatts_lock_profile_event_handler(esp_gatts_cb_event_t event, esp_gat
             gatts_profile_table[LOCK_PROFILE_APP_ID].write_characteristic_handle = param->add_char.attr_handle;
         }
 
-        // gatts_profile_table[LOCK_PROFILE_APP_ID].read_characteristic_handle = param->add_char.attr_handle;
-        // Add a description descriptor
-        // gatts_profile_table[LOCK_PROFILE_APP_ID].descr_uuid.len = ESP_UUID_LEN_16;
-        // gatts_profile_table[LOCK_PROFILE_APP_ID].descr_uuid.uuid.uuid16 = ESP_GATT_UUID_CHAR_DESCRIPTION;
-        // static const char characteristic_description[] = "Input characteristic";
-        // esp_attr_value_t description_descriptor_value = {
-        //     .attr_len = sizeof(characteristic_description),
-        //     .attr_value = (uint8_t *)characteristic_description,
-        // };
-        // esp_err_t add_descr_ret = esp_ble_gatts_add_char_descr(
-        //     gatts_profile_table[LOCK_PROFILE_APP_ID].service_handle,
-        //     &gatts_profile_table[LOCK_PROFILE_APP_ID].descr_uuid,
-        //     ESP_GATT_PERM_READ,
-        //     &description_descriptor_value ,
-        //     NULL);
-        // if (add_descr_ret) {
-        //     ESP_LOGE(TAG, "add char descr failed, error code = %x", add_descr_ret);
-        // }
         break;
     case ESP_GATTS_ADD_CHAR_DESCR_EVT:
         // gatts_profile_table[LOCK_PROFILE_APP_ID].descr_handle = param->add_char_descr.attr_handle;
@@ -352,18 +304,11 @@ static void gatts_lock_profile_event_handler(esp_gatts_cb_event_t event, esp_gat
         {
             // System ID
             ESP_LOGD(TAG, "GATTS: System ID is being read");
-            // TODO
-            read_response.attr_value.len = 10;
-            read_response.attr_value.value[0] = 0x00;
-            read_response.attr_value.value[1] = 0x11;
-            read_response.attr_value.value[2] = 0x22;
-            read_response.attr_value.value[3] = 0x33;
-            read_response.attr_value.value[4] = 0x44;
-            read_response.attr_value.value[5] = 0x55;
-            read_response.attr_value.value[6] = 0x66;
-            read_response.attr_value.value[7] = 0x77;
-            read_response.attr_value.value[8] = 0x88;
-            read_response.attr_value.value[9] = 0x99;
+            read_response.attr_value.len = sizeof(system_id);
+            for (int i = 0; i < sizeof(system_id); i++) {
+                read_response.attr_value.value[i] = system_id[i];
+            }
+            esp_ble_gatts_send_response(gatts_if, param->read.conn_id, param->read.trans_id, ESP_GATT_OK, &read_response);
         }
         else if (param->read.handle == gatts_profile_table[LOCK_PROFILE_APP_ID].read_characteristic_handle)
         {
@@ -632,6 +577,4 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_ble_gatts_register_callback(gatts_event_handler));
 
     ESP_ERROR_CHECK(esp_ble_gatts_app_register(LOCK_PROFILE_APP_ID));
-
-    // ESP_ERROR_CHECK(esp_ble_gap_config_adv_data(&adv_data));
 }
