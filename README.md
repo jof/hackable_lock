@@ -5,13 +5,16 @@ The concept behind this is to create a secure access controller that is also a b
 ## Version 0
 The prototype hardware concept is an ESP32-type Bluetooth LE controller that acts as a Bluetooth LE "Peripheral"/"Server" role.
 
-At runtime, the smart lock with be on a resource-constrained ESP32, and the client will be an Android, iOS, or nRF52 device.
+At runtime, the smart lock with be on a resource-constrained ESP32, and the client will be an Android, iOS, or nRF embedded device.
 
-A locking system is identified by a 10-byte System ID, which can be used for clients to distinguish between locks on multiple systems using this same protocol scheme.
+A locking system is identified by a 6-byte System ID, which can be used for clients to distinguish between locks on multiple systems using this same protocol scheme.
 
-Currently, this is stored in a readable Service Characteristic as well as stuffed into the BLE Advertising Data structure, so that locks and locking systems can be identified without having to create a BLE connection.
+The System ID is embedded into both a readable Service Characteristics as well
+as stuffed into the manufacturer data field of an Advertisement Scan Response
+frame so that locking systems can be quickly identified without having to create
+a full BLE connection.
 
-Because we don't currently have a 16-bit company identifier from the Bluetooth SIG, we are using 0xFFFF as our identifier.
+Because we don't currently have a 16-bit company identifier from the Bluetooth SIG, we are using 0xF00D as our identifier.
 
 Because BLE has a relatively small MTU, a basic message fragmentation protocol is defined:
 

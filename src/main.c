@@ -20,13 +20,13 @@ static const char *TAG = "main";
 #define PROFILE_COUNT 1
 #define LOCK_PROFILE_APP_ID 0
 #define LOCK_PROFILE_HANDLE_COUNT 10
-#define DEVICE_NAME "Hackable Lock"
+#define DEVICE_NAME "Lock"
 
 // We don't have a Company Identifier from the Bluetooth SIG, but they appear to
 // assign incrementally starting from 0x0000, so just choosing 0xFFFF as an
 // undefined value unlikely to conflict with anybody else for a long time.
 // https://bitbucket.org/bluetooth-SIG/public/src/main/assigned_numbers/company_identifiers/company_identifiers.yaml
-#define VENDOR_ID 0xFFFF
+#define VENDOR_ID 0xF00D
 
 uint8_t l2_rx_message_buffer[MAX_L2_MESSAGE_SIZE];
 uint8_t l2_tx_message_buffer[MAX_L2_MESSAGE_SIZE];
@@ -34,7 +34,7 @@ uint16_t l2_tx_message_buffer_idx;
 
 // System ID
 // TODO -- This should come from something more easily configured. Maybe NVS?
-static uint8_t system_id[10] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99};
+static uint8_t system_id[6] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
 
 // 31337000-feed-face-100c-deadcafefeed
 static uint8_t lock_service_uuid128[16] = {0xED, 0xFE, 0xFE, 0xCA, 0xAD, 0xDE, 0x0C, 0x10, 0xCE, 0xFA, 0xED, 0xFE, 0x00, 0x70, 0x33, 0x31};
@@ -48,41 +48,36 @@ static uint8_t lock_characteristic_read_uuid128[16] = {0xCE, 0xFA, 0xEE, 0xFF, 0
 static uint8_t lock_characteristic_write_uuid128[16] = {0x0D, 0xF0, 0xAD, 0x0B, 0x00, 0xA0, 0x0C, 0x10, 0xCE, 0xFA, 0xED, 0xFE, 0x00, 0x70, 0x33, 0x31};
 
 // Construct BLE Advertising data, pulling in manufacturer data with a System ID from `system_id`
-void get_ble_adv_data(uint8_t manufacturer_data[], uint16_t *manufacturer_data_len, esp_ble_adv_data_t *adv_data) {
+void get_ble_adv_data(esp_ble_adv_data_t *adv_data) {
     adv_data->set_scan_rsp = false;
-    adv_data->include_name = false;
+    adv_data->include_name = true;
     adv_data->include_txpower = false;
-    adv_data->min_interval = 0x20;
-    adv_data->max_interval = 0x40;
+    adv_data->appearance = 0x0000;
     adv_data->service_data_len = 0;
     adv_data->service_uuid_len = ESP_UUID_LEN_128;
     adv_data->p_service_uuid = lock_service_uuid128;
     adv_data->flag = (ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT);
-
-    *manufacturer_data_len = 0;
-    manufacturer_data[0] = (uint8_t)(VENDOR_ID >> 8);
-    manufacturer_data[1] = (uint8_t)(VENDOR_ID & 0xFF);
-    *manufacturer_data_len += 2;
-    memcpy(&manufacturer_data[2], system_id, sizeof(system_id));
-    // bcopy(system_id, &manufacturer_data[2], sizeof(system_id));
-    *manufacturer_data_len += sizeof(system_id);
-    adv_data->manufacturer_len = *manufacturer_data_len;
-    adv_data->p_manufacturer_data = manufacturer_data;
 }
 
-void get_ble_scan_rsp_data(esp_ble_adv_data_t *adv_data) {
+void get_ble_scan_rsp_data(esp_ble_adv_data_t *adv_data, uint8_t manufacturer_data[], uint16_t *manufacturer_data_len) {
     adv_data->set_scan_rsp = true;
-    adv_data->include_name = true;
+    adv_data->include_name = false;
     adv_data->include_txpower = false;
     // Reference: https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Assigned_Numbers/out/en/Assigned_Numbers.pdf?v=1710832648803
     adv_data->appearance = 0x0708; // Access Control - Door Lock
-    adv_data->manufacturer_len = 0;
-    adv_data->p_manufacturer_data = NULL;
     adv_data->service_data_len = 0;
     adv_data->p_service_data = NULL;
     adv_data->service_uuid_len = 0;
-    adv_data->p_service_uuid = NULL;
     adv_data->flag = (ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT);
+
+    *manufacturer_data_len = 0;
+    manufacturer_data[0] = (uint8_t)(VENDOR_ID & 0xFF);
+    manufacturer_data[1] = (uint8_t)(VENDOR_ID >> 8);
+    *manufacturer_data_len += 2;
+    memcpy(&manufacturer_data[2], system_id, sizeof(system_id));
+    *manufacturer_data_len += sizeof(system_id);
+    adv_data->manufacturer_len = *manufacturer_data_len;
+    adv_data->p_manufacturer_data = manufacturer_data;
 }
 
 esp_ble_adv_params_t adv_params = {
@@ -110,10 +105,6 @@ struct gatts_profile
     esp_bt_uuid_t write_characteristic_uuid;
     uint16_t system_id_characteristic_handle;
     esp_bt_uuid_t system_id_characteristic_uuid;
-    // esp_gatt_perm_t perm;
-    // esp_gatt_char_prop_t property;
-    // uint16_t descr_handle;
-    // esp_bt_uuid_t descr_uuid;
 };
 
 static void gatts_lock_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param);
@@ -145,11 +136,8 @@ static void gatts_lock_profile_event_handler(esp_gatts_cb_event_t event, esp_gat
         }
         // Configure advertisements
         esp_err_t config_adv_data_ret;
-        uint16_t manufacturer_data_len;
-        uint8_t manufacturer_data[30];
-        memset(manufacturer_data, 0, 30);
         esp_ble_adv_data_t adv_data;
-        get_ble_adv_data(manufacturer_data, &manufacturer_data_len, &adv_data);
+        get_ble_adv_data(&adv_data);
         config_adv_data_ret = esp_ble_gap_config_adv_data(&adv_data);
         if (config_adv_data_ret)
         {
@@ -157,8 +145,11 @@ static void gatts_lock_profile_event_handler(esp_gatts_cb_event_t event, esp_gat
         }
         adv_config_done |= adv_config_flag;
         // Configure Scan Response data
+        uint16_t manufacturer_data_len;
+        uint8_t manufacturer_data[8];
+        memset(manufacturer_data, 0, sizeof(manufacturer_data));
         esp_ble_adv_data_t scan_rsp_data;
-        get_ble_scan_rsp_data(&scan_rsp_data);
+        get_ble_scan_rsp_data(&scan_rsp_data, manufacturer_data, &manufacturer_data_len);
         config_adv_data_ret = esp_ble_gap_config_adv_data(&scan_rsp_data);
         if (config_adv_data_ret)
         {
